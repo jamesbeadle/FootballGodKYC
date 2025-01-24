@@ -1,7 +1,7 @@
 import * as functions from "firebase-functions";
 import express from "express";
-import { idlFactory } from "@dfinity/agent/lib/cjs/canisters/management_service";
 import { ActorFactory } from "./actor.factory";
+import { idlFactory } from "./backend";
 const app = express();
 app.use(express.json());
 
@@ -14,7 +14,20 @@ app.post("/forwardKYCResponse", async (req, res) => {
     );
     
     const data = req.body;
-    await actor.kycVerificationCallback(data);
+    
+    if (data.event === "verification.accepted") {
+      await actor.kycVerificationCallback({
+        ShuftiAcceptedResponse: {
+          reference: data.reference,
+          event: data.event,
+        }
+      });
+    } else {
+      await actor.kycVerificationCallback({
+        ShuftiRejectedResponse: {}
+      });
+    }
+
     return res.status(200).send('OK');
 
   } catch (err: any) {

@@ -4,7 +4,8 @@ import bodyParser from "body-parser";
 import crypto from "crypto";
 import { ActorFactory } from "./actor.factory";
 import { idlFactory } from "./backend";
-import { SHUFTI_SECRET_KEY } from "./environment";
+import { SHUFTI_CLIENT_ID, SHUFTI_SECRET_KEY } from "./environment";
+import axios from "axios";
 
 // 1. Extend Express Request to allow `req.rawBody`
 declare global {
@@ -85,7 +86,50 @@ app.post("/forwardKYCResponse", async (req: Request, res: Response) => {
           event: data.event,
         },
       });
-    } else {
+    } else if (data.event === "verification.status.changed") {
+
+      const payload = {
+        reference: data.reference,
+      };
+      
+      try {
+        const token = btoa(`${SHUFTI_CLIENT_ID}:${SHUFTI_SECRET_KEY}`); 
+        const status = await axios.post(
+          'https://api.shuftipro.com/status',
+          payload,
+          {
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+              'Authorization': `Basic ${token}`, 
+            },
+          }
+        );
+
+        if(status.data.event == "verification.accepted"){
+          await actor.kycVerificationCallback({
+            ShuftiAcceptedResponse: {
+              reference: data.reference,
+              event: status.data.event,
+            },
+          });
+        }
+
+        if(status.data.event == "verification.rejected"){
+          await actor.kycVerificationCallback({
+            ShuftiRejectedResponse: {
+              reference: data.reference,
+              event: status.data.event
+            },
+          });
+        }
+
+      } catch (error) {
+        console.error('Error:', error);
+        throw error;
+      }
+
+    } else if (data.event === "verification.rejected") {
       await actor.kycVerificationCallback({
         ShuftiRejectedResponse: {
           reference: data.reference,

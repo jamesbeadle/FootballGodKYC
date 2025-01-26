@@ -1,21 +1,41 @@
 import * as functions from "firebase-functions";
-import express from "express";
+import express, { Request, Response } from "express";
+import bodyParser from "body-parser";
+import crypto from "crypto";
 import { ActorFactory } from "./actor.factory";
 import { idlFactory } from "./backend";
-import crypto from "crypto"; 
 import { SHUFTI_SECRET_KEY } from "./environment";
 
-const app = express();
-app.use(express.json());
+// 1. Extend Express Request to allow `req.rawBody`
+declare global {
+  namespace Express {
+    interface Request {
+      rawBody?: Buffer;
+    }
+  }
+}
 
-function verifyShuftiSignature(rawBody: Buffer, signatureFromHeader?: string, isNewKey = true): boolean {
-  if (!signatureFromHeader) return false;
-  
-  // The raw callback data as a string
-  const responseString = rawBody.toString('utf8');
-  
-  // If the key is "new" (after 15 March 2023 or updated), first hash the secret key
-  // Then do: hash('sha256', responseString + hashed_secret_key)
+// This middleware "verify" function has 4 parameters in its signature
+function rawBodySaver(req: Request, res: Response, buf: Buffer, encoding: string) {
+  if (buf && buf.length) {
+    req.rawBody = buf; // store raw Buffer on the request
+  }
+}
+
+const app = express();
+
+// 2. Pass the `rawBodySaver` as the `verify` function
+app.use(bodyParser.json({ verify: rawBodySaver }));
+
+function verifyShuftiSignature(
+  rawBody: Buffer | undefined,
+  signatureFromHeader: string | undefined,
+  isNewKey = true
+): boolean {
+  if (!signatureFromHeader || !rawBody) return false;
+
+  const responseString = rawBody.toString("utf8");
+
   if (isNewKey) {
     const hashedSecretKey = crypto
       .createHash("sha256")
@@ -28,9 +48,7 @@ function verifyShuftiSignature(rawBody: Buffer, signatureFromHeader?: string, is
       .digest("hex");
 
     return calculatedSignature === signatureFromHeader;
-  
   } else {
-    // Old key approach: hash('sha256', responseString + secret_key)
     const calculatedSignature = crypto
       .createHash("sha256")
       .update(responseString + SHUFTI_SECRET_KEY)
@@ -40,44 +58,43 @@ function verifyShuftiSignature(rawBody: Buffer, signatureFromHeader?: string, is
   }
 }
 
-
-app.post("/forwardKYCResponse", async (req, res) => {
+app.post("/forwardKYCResponse", async (req: Request, res: Response) => {
   try {
-
     const shuftiSignature = req.header("Signature");
-    const isSignatureValid = verifyShuftiSignature(req.body, shuftiSignature, /* isNewKey = */ true);
+    const isSignatureValid = verifyShuftiSignature(req.rawBody, shuftiSignature, true);
     if (!isSignatureValid) {
       console.error("Shufti signature mismatch. Possible tampering.");
       return res.status(403).send("Invalid signature");
     }
+
+    // Now safely parse the raw body
     let data;
     try {
-      data = JSON.parse(req.body.toString("utf8"));
+      data = JSON.parse(req.rawBody!.toString("utf8"));
     } catch (err) {
       console.error("Invalid JSON in request body:", err);
       return res.status(400).send("Invalid JSON");
     }
 
-    const actor = ActorFactory.createActor(
-      idlFactory, 
-      "44kin-waaaa-aaaal-qbxra-cai"
-    );
-    
+    const actor = ActorFactory.createActor(idlFactory, "44kin-waaaa-aaaal-qbxra-cai");
+
     if (data.event === "verification.accepted") {
       await actor.kycVerificationCallback({
         ShuftiAcceptedResponse: {
           reference: data.reference,
           event: data.event,
-        }
+        },
       });
     } else {
       await actor.kycVerificationCallback({
-        ShuftiRejectedResponse: {}
+        ShuftiRejectedResponse: {
+          reference: data.reference,
+          event: data.event
+        },
       });
     }
 
-    return res.status(200).send('OK');
-
+    return res.status(200).send("OK");
   } catch (err: any) {
     console.error("Error forwarding request:", err);
     return res.status(500).json({ error: err.message || String(err) });
@@ -85,4 +102,3 @@ app.post("/forwardKYCResponse", async (req, res) => {
 });
 
 export const api = functions.https.onRequest(app);
-
